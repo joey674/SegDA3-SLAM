@@ -12,12 +12,12 @@ from vggt.utils.geometry import closed_form_inverse_se3, unproject_depth_map_to_
 from vggt.utils.load_fn import load_and_preprocess_images
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 
-from vggt_slam.loop_closure import ImageRetrieval
-from vggt_slam.frame_overlap import FrameTracker
-from vggt_slam.map import GraphMap
-from vggt_slam.submap import Submap
-from vggt_slam.h_solve import ransac_projective
-from vggt_slam.gradio_viewer import TrimeshViewer
+from src.da3_slam.loop_closure import ImageRetrieval
+from src.da3_slam.frame_overlap import FrameTracker
+from src.da3_slam.map import GraphMap
+from src.da3_slam.submap import Submap
+from src.da3_slam.h_solve import ransac_projective
+from src.da3_slam.gradio_viewer import TrimeshViewer
 
 def color_point_cloud_by_confidence(pcd, confidence, cmap='viridis'):
     """
@@ -158,9 +158,9 @@ class Solver:
         self.map = GraphMap()
         self.use_sim3 = use_sim3
         if self.use_sim3:
-            from vggt_slam.graph_se3 import PoseGraph
+            from src.da3_slam.graph_se3 import PoseGraph
         else:
-            from vggt_slam.graph import PoseGraph
+            from src.da3_slam.graph import PoseGraph
         self.graph = PoseGraph()
 
         self.image_retrieval = ImageRetrieval()

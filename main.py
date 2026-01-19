@@ -9,8 +9,8 @@ import cv2
 import matplotlib.pyplot as plt
 import time
 
-import vggt_slam.slam_utils as utils
-from vggt_slam.solver import Solver
+import src.da3_slam.slam_utils as utils
+from src.da3_slam.solver import Solver
 
 from depth_anything_3.api import DepthAnything3
 

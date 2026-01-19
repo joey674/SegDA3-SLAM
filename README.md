@@ -9,6 +9,8 @@ pip3 install -r requirements.txt
 git clone https://github.com/Dominic101/salad.git
 pip install -e ./salad
 
+pip install -e .
+
 ## DA3
 cd /home/zhouyi/repo/model_DepthAnythingV3
 pip install xformers torch\>=2 torchvision
