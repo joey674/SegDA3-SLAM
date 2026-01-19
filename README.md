@@ -5,5 +5,11 @@ conda create -n vggt-slam python=3.11
 conda activate vggt-slam
 ./setup.sh
 
+## DA3
+cd /home/zhouyi/repo/model_DepthAnythingV3
+pip install xformers torch\>=2 torchvision
+pip install -e . 
+cd /home/zhouyi/repo/VGGT-SLAM
+
 # run
 python3 main.py --image_folder office_loop --max_loops 1 --vis_map

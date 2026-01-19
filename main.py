@@ -7,6 +7,7 @@ import torch
 from tqdm.auto import tqdm
 import cv2
 import matplotlib.pyplot as plt
+import time
 
 import vggt_slam.slam_utils as utils
 from vggt_slam.solver import Solver
@@ -51,12 +52,15 @@ def main():
         vis_point_size = args.vis_point_size,
     )
 
-    print("Initializing and loading VGGT model...")
-    # model = VGGT.from_pretrained("facebook/VGGT-1B")
+    # print("Initializing and loading VGGT model...")
+    # # model = VGGT.from_pretrained("facebook/VGGT-1B")
+    # model = VGGT()
+    # _URL = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
+    # model.load_state_dict(torch.hub.load_state_dict_from_url(_URL))
 
-    model = VGGT()
-    _URL = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
-    model.load_state_dict(torch.hub.load_state_dict_from_url(_URL))
+    print("Initializing and loading DepthAnythingV3 model...")
+    from depth_anything_3.api import DepthAnything3
+    model = DepthAnything3.from_pretrained("/home/zhouyi/repo/model_DepthAnythingV3/checkpoints/DA3-LARGE-1.1")
 
     model.eval()
     model = model.to(device)
@@ -94,11 +98,11 @@ def main():
             solver.graph.optimize()
             solver.map.update_submap_homographies(solver.graph)
 
-            loop_closure_detected = len(predictions["detected_loops"]) > 0
+            # loop_closure_detected = len(predictions["detected_loops"]) > 0
             if args.vis_map:
-                if loop_closure_detected:
-                    solver.update_all_submap_vis()
-                else:
+                # if loop_closure_detected:
+                #     solver.update_all_submap_vis()
+                # else:
                     solver.update_latest_submap_vis()
             
             # Reset for next submap.
@@ -139,3 +143,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    time.sleep(100)  

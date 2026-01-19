@@ -429,29 +429,122 @@ class Solver:
 
         self.current_working_submap = new_submap
 
+        #########################################################
+
+        # 1. [数据转换] Tensor(CUDA) -> List of Numpy(CPU)
+        S, C, H, W = images.shape # 原始尺寸: [7, 3, 406, 518]
+        imgs_np = (images.permute(0, 2, 3, 1).cpu().numpy() * 255).astype(np.uint8)
+        input_images_list = [img for img in imgs_np]
+
+        # 2. [模型推理]
+        print(f"Running DA3 inference on {S} frames...")
         with torch.no_grad():
-            with torch.cuda.amp.autocast(dtype=dtype):
-                predictions = model(images)
+            da3_out = model.inference(input_images_list)
         
-        ## DEBUG
-        print("Keys:", predictions.keys())
-        for k, v in predictions.items():
-            if isinstance(v, torch.Tensor):
-                print(f"Key: {k}, Shape: {v.shape}, Type: {v.dtype}")
-            else:
-                print(f"Key: {k}, Type: {type(v)}")
+        # 3. [处理输出尺寸不匹配问题]
+        device = images.device
+        
+        # 3.1 获取 DA3 实际输出的尺寸
+        # da3_out.depth 通常是 numpy array, 形状可能是 [S, H_out, W_out]
+        depth_raw = torch.from_numpy(da3_out.depth).to(device)
+        conf_raw = torch.from_numpy(da3_out.conf).to(device)
+        
+        # 确保是 [S, H_out, W_out] 格式
+        if depth_raw.dim() == 2: # 假如它被压扁了
+             # 尝试推断形状，或者假设它已经是堆叠好的。
+             # 基于报错信息，这里它应该是一个总数不对的 array，通常 inference 返回的是 [S, H, W]
+             pass 
+        
+        # 获取实际输出的高宽
+        # 注意: 如果 da3_out.depth 是扁平的，这里需要更复杂的处理。
+        # 但通常它保持结构。我们先看总数是否能被 S 整除。
+        total_elements = depth_raw.numel()
+        pixels_per_img = total_elements // S
+        # 尝试推测 H_out, W_out。
+        # 既然我们算出是 392x504，我们就动态获取 shape
+        # 如果 depth_raw 已经是 [S, H_out, W_out] 直接取 shape
+        if depth_raw.shape[0] == S and depth_raw.dim() == 3:
+            _, H_out, W_out = depth_raw.shape
+        else:
+            # 假如是扁平的或者其他情况，这里做一个防御性 reshape
+            # 这是一个基于你报错数值的猜想 392x504
+            # 更好的做法是依赖 da3_out.depth 的原始 shape
+            H_out, W_out = depth_raw.shape[-2], depth_raw.shape[-1]
 
-        extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:])
-        ## DEBUG
-        print("Extrinsic Shape:", extrinsic.shape)
-        print("Extrinsic Sample:\n", extrinsic[0]) 
+        print(f"DEBUG: Input: {H}x{W}, Output: {H_out}x{W_out}")
 
-        predictions["extrinsic"] = extrinsic
-        predictions["intrinsic"] = intrinsic
-        predictions["detected_loops"] = detected_loops
+        # 3.2 缩放回原始尺寸 [S, H, W]
+        # 需要增加维度到 [S, 1, H, W] 才能用 interpolate
+        depth = torch.nn.functional.interpolate(
+            depth_raw.unsqueeze(1), size=(H, W), mode='bilinear', align_corners=False
+        ).squeeze(1)
+        
+        conf = torch.nn.functional.interpolate(
+            conf_raw.unsqueeze(1), size=(H, W), mode='bilinear', align_corners=False
+        ).squeeze(1)
 
+        # 3.3 处理外参和内参
+        extrinsics = torch.from_numpy(da3_out.extrinsics).to(device).view(S, 3, 4)
+        intrinsics_raw = torch.from_numpy(da3_out.intrinsics).to(device).view(S, 3, 3)
+
+        # [重要] 修正内参
+        # 图像被拉伸回 HxW，内参矩阵中的焦距(fx, fy)和光心(cx, cy)也要相应缩放
+        scale_x = W / W_out
+        scale_y = H / H_out
+        
+        intrinsics = intrinsics_raw.clone()
+        intrinsics[:, 0, 0] *= scale_x # fx
+        intrinsics[:, 0, 2] *= scale_x # cx
+        intrinsics[:, 1, 1] *= scale_y # fy
+        intrinsics[:, 1, 2] *= scale_y # cy
+
+        # 4. [生成点云] 使用修正后的 depth 和 intrinsics
+        # 4.1 生成像素坐标网格
+        y_grid, x_grid = torch.meshgrid(torch.arange(H, device=device), torch.arange(W, device=device), indexing='ij')
+        pixels = torch.stack([x_grid, y_grid, torch.ones_like(x_grid)], dim=-1).float()
+        pixels = pixels.unsqueeze(0).expand(S, -1, -1, -1) # [S, H, W, 3]
+        pixels_flat = pixels.reshape(S, H*W, 3)
+
+        # 4.2 Pixel -> Camera
+        K_inv = torch.inverse(intrinsics) # [S, 3, 3]
+        # [S, 3, 3] @ [S, 3, HW]
+        cam_points = torch.bmm(K_inv, pixels_flat.transpose(1, 2)).transpose(1, 2)
+        cam_points = cam_points * depth.reshape(S, H*W, 1) # 应用深度
+
+        # 4.3 Camera -> World
+        bottom_row = torch.tensor([0,0,0,1], device=device, dtype=torch.float32).view(1,1,4).expand(S, -1, -1)
+        E_4x4 = torch.cat([extrinsics, bottom_row], dim=1) # [S, 4, 4]
+        E_inv = torch.inverse(E_4x4)
+        
+        cam_points_homo = torch.cat([cam_points, torch.ones((S, H*W, 1), device=device)], dim=-1)
+        world_points_flat = torch.bmm(E_inv, cam_points_homo.transpose(1, 2)).transpose(1, 2)
+        world_points = world_points_flat[..., :3].view(S, H, W, 3)
+
+        # 5. [组装字典]
+        predictions = {
+            "pose_enc": None,         
+            "depth": depth.unsqueeze(-1), # [S, H, W, 1]
+            "depth_conf": conf,
+            "world_points": world_points,
+            "world_points_conf": conf,
+            "images": images,
+            "extrinsic": extrinsics,
+            "intrinsic": intrinsics,
+            "detected_loops": detected_loops
+        }
+
+        # 移除 Batch 维度 (适配下游逻辑)
         for key in predictions.keys():
-            if isinstance(predictions[key], torch.Tensor):
-                predictions[key] = predictions[key].cpu().numpy().squeeze(0)  # remove batch dimension and convert to numpy
-
+             if isinstance(predictions[key], torch.Tensor):
+                 predictions[key] = predictions[key].cpu().numpy()
+                 if predictions[key].shape[0] == 1 and S == 1: # 仅当 Batch=1 时 squeeze，你这里 S=7 不应该 squeeze 第一维
+                     predictions[key] = predictions[key].squeeze(0)
+                 # 但 VGGT 原代码里如果是 Sequence，通常保留 S 维度，或者 squeeze(0) 是为了去掉 Batch 维度 (B, S, ...)
+                 # 注意：你的 images 输入是 [S, C, H, W]，没有 Batch 维度 B。
+                 # 如果原代码 predictions[key] = ...squeeze(0)，说明它原本期望输入是 [B, S, ...]
+                 # 你的 main.py 调用是 solver.run_predictions(..., model, ...)
+                 # 在 run_predictions 里，load_and_preprocess_images 返回的是 [S, 3, H, W] (没有 B)
+                 # 所以这里不需要 squeeze(0)，除非下游期望去掉 S (不可能，因为是 SLAM 序列)
+                 # 结论：不要执行 squeeze(0)，直接转 numpy 即可。
+        
         return predictions
