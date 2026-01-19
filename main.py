@@ -12,20 +12,18 @@ import time
 import vggt_slam.slam_utils as utils
 from vggt_slam.solver import Solver
 
-from vggt.models.vggt import VGGT
+from depth_anything_3.api import DepthAnything3
 
 
 parser = argparse.ArgumentParser(description="VGGT-SLAM demo")
 parser.add_argument("--image_folder", type=str, default="examples/kitchen/images/", help="Path to folder containing images")
 parser.add_argument("--vis_map", action="store_true", help="Visualize point cloud in viser as it is being build, otherwise only show the final map")
 parser.add_argument("--vis_flow", action="store_true", help="Visualize optical flow from RAFT for keyframe selection")
-parser.add_argument("--log_results", action="store_true", help="save txt file with results")
-parser.add_argument("--skip_dense_log", action="store_true", help="by default, logging poses and logs dense point clouds. If this flag is set, dense logging is skipped")
-parser.add_argument("--log_path", type=str, default="poses.txt", help="Path to save the log file")
 parser.add_argument("--use_sim3", action="store_true", help="Use Sim3 instead of SL(4)")
-parser.add_argument("--plot_focal_lengths", action="store_true", help="Plot focal lengths for the submaps")
-parser.add_argument("--submap_size", type=int, default=16, help="Number of new frames per submap, does not include overlapping frames or loop closure frames")
+parser.add_argument("--submap_size", type=int, default=4, help="Number of new frames per submap, does not include overlapping frames or loop closure frames")
 parser.add_argument("--overlapping_window_size", type=int, default=1, help="ONLY DEFAULT OF 1 SUPPORTED RIGHT NOW. Number of overlapping frames, which are used in SL(4) estimation")
+parser.add_argument("--use_optical_flow_downsample", action="store_false", help="")
+
 parser.add_argument("--downsample_factor", type=int, default=1, help="Factor to reduce image size by 1/N")
 parser.add_argument("--max_loops", type=int, default=1, help="Maximum number of loop closures per submap")
 parser.add_argument("--min_disparity", type=float, default=50, help="Minimum disparity to generate a new keyframe")
@@ -34,12 +32,12 @@ parser.add_argument("--conf_threshold", type=float, default=25.0, help="Initial 
 parser.add_argument("--vis_stride", type=int, default=1, help="Stride interval in the 3D point cloud image for visualization. Try increasing (such as 4) to reduce lag in visualizing large maps.")
 parser.add_argument("--vis_point_size", type=float, default=0.003, help="Visualization point size")
 
+
 def main():
     """
     Main function that wraps the entire pipeline of VGGT-SLAM.
     """
     args = parser.parse_args()
-    use_optical_flow_downsample = True
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
@@ -59,7 +57,6 @@ def main():
     # model.load_state_dict(torch.hub.load_state_dict_from_url(_URL))
 
     print("Initializing and loading DepthAnythingV3 model...")
-    from depth_anything_3.api import DepthAnything3
     model = DepthAnything3.from_pretrained("/home/zhouyi/repo/model_DepthAnythingV3/checkpoints/DA3-LARGE-1.1")
 
     model.eval()
@@ -78,7 +75,7 @@ def main():
     image_names_subset = []
     data = []
     for image_name in tqdm(image_names):
-        if use_optical_flow_downsample:
+        if args.use_optical_flow_downsample:
             img = cv2.imread(image_name)
             enough_disparity = solver.flow_tracker.compute_disparity(img, args.min_disparity, args.vis_flow)
             if enough_disparity:
@@ -98,47 +95,13 @@ def main():
             solver.graph.optimize()
             solver.map.update_submap_homographies(solver.graph)
 
-            # loop_closure_detected = len(predictions["detected_loops"]) > 0
-            if args.vis_map:
-                # if loop_closure_detected:
-                #     solver.update_all_submap_vis()
-                # else:
-                    solver.update_latest_submap_vis()
+            solver.update_latest_submap_vis()
             
             # Reset for next submap.
             image_names_subset = image_names_subset[-args.overlapping_window_size:]
         
     print("Total number of submaps in map", solver.map.get_num_submaps())
     print("Total number of loop closures in map", solver.graph.get_num_loops())
-
-    if not args.vis_map:
-        # just show the map after all submaps have been processed
-        solver.update_all_submap_vis()
-
-    if args.log_results:
-        solver.map.write_poses_to_file(args.log_path)
-
-        # Log the full point cloud as one file, used for visualization.
-        # solver.map.write_points_to_file(args.log_path.replace(".txt", "_points.pcd"))
-
-        if not args.skip_dense_log:
-            # Log the dense point cloud for each submap.
-            solver.map.save_framewise_pointclouds(args.log_path.replace(".txt", "_logs"))
-
-    if args.plot_focal_lengths:
-        # Define a colormap
-        colors = plt.cm.viridis(np.linspace(0, 1, len(data)))
-        # Create the scatter plot
-        plt.figure(figsize=(8, 6))
-        for i, values in enumerate(data):
-            y = values  # Y-values from the list
-            x = [i] * len(values)  # X-values (same for all points in the list)
-            plt.scatter(x, y, color=colors[i], label=f'List {i+1}')
-
-        plt.xlabel("poses")
-        plt.ylabel("Focal lengths")
-        plt.grid()
-        plt.show()
 
 
 if __name__ == "__main__":
