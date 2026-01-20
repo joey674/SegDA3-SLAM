@@ -1,3 +1,7 @@
+####
+outputs/
+
+
 # Ignore some files from the installation/demo
 office_loop/
 gtsam_with_sl4/

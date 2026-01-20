@@ -7,7 +7,6 @@ import open3d as o3d
 import viser
 import viser.transforms as viser_tf
 from termcolor import colored
-from typing import Dict, List
 
 from vggt.utils.geometry import closed_form_inverse_se3, unproject_depth_map_to_point_map
 from vggt.utils.load_fn import load_and_preprocess_images
@@ -23,11 +22,22 @@ from src.da3_slam.gradio_viewer import TrimeshViewer
 def color_point_cloud_by_confidence(pcd, confidence, cmap='viridis'):
     """
     Color a point cloud based on per-point confidence values.
+    
+    Args:
+        pcd (o3d.geometry.PointCloud): The point cloud.
+        confidence (np.ndarray): Confidence values, shape (N,).
+        cmap (str): Matplotlib colormap name.
     """
     assert len(confidence) == len(pcd.points), "Confidence length must match number of points"
+
+    # Normalize confidence to [0, 1]
     confidence_normalized = (confidence - np.min(confidence)) / (np.ptp(confidence) + 1e-8)
+    
+    # Map to colors using matplotlib colormap
     colormap = plt.get_cmap(cmap)
-    colors = colormap(confidence_normalized)[:, :3]
+    colors = colormap(confidence_normalized)[:, :3]  # Drop alpha channel
+
+    # Assign to point cloud
     pcd.colors = o3d.utility.Vector3dVector(colors)
     return pcd
 
@@ -37,13 +47,6 @@ class Viewer:
 
         self.server = viser.ViserServer(host="0.0.0.0", port=port)
         self.server.gui.configure_theme(titlebar_content=None, control_layout="collapsible")
-
-        # --- [新增] 1. 全局控制：显示/隐藏动态物体 ---
-        self.gui_show_dynamic = self.server.gui.add_checkbox(
-            "Show Dynamic Objects",
-            initial_value=True,
-        )
-        self.gui_show_dynamic.on_update(self._on_update_show_dynamic)
 
         # Global toggle for all frames and frustums
         self.gui_show_frames = self.server.gui.add_checkbox(
@@ -55,14 +58,17 @@ class Viewer:
         # Store frames and frustums by submap
         self.submap_frames: Dict[int, List[viser.FrameHandle]] = {}
         self.submap_frustums: Dict[int, List[viser.CameraFrustumHandle]] = {}
-        
-        # --- [新增] 2. 存储动态点云的 Handle，以便统一控制显隐 ---
-        self.dynamic_pcd_handles: List[viser.PointCloudHandle] = []
 
         num_rand_colors = 250
         self.random_colors = np.random.randint(0, 256, size=(num_rand_colors, 3), dtype=np.uint8)
 
     def visualize_frames(self, extrinsics: np.ndarray, images_: np.ndarray, submap_id: int, image_scale: float=0.5) -> None:
+        """
+        Add camera frames and frustums to the scene for a specific submap.
+        extrinsics: (S, 3, 4)
+        images_:    (S, 3, H, W)
+        """
+
         if isinstance(images_, torch.Tensor):
             images_ = images_.cpu().numpy()
 
@@ -98,6 +104,7 @@ class Viewer:
             fy = 1.1 * h
             fov = 2 * np.arctan2(h / 2, fy)
 
+            # Downsample for visualization with `image_scale`
             img_resized = cv2.resize(
                 img,
                 (int(img.shape[1] * image_scale), int(img.shape[0] * image_scale)),
@@ -115,56 +122,9 @@ class Viewer:
             )
             frustum.visible = self.gui_show_frames.value
             self.submap_frustums[submap_id].append(frustum)
-    
-    # --- [新增] 3. 封装添加点云的逻辑，自动分离静态和动态 ---
-    def add_split_point_cloud(self, name: str, points: np.ndarray, colors: np.ndarray, point_size: float):
-        """
-        根据颜色（纯红色 [255, 0, 0]）自动分离静态和动态点云，并添加到 Viser。
-        """
-        # 检测红色点 (Dynamic)
-        # colors 是 float [0,1] 还是 uint8 [0,255]? 根据 submap.py 来看通常是 float, 
-        # 但在 solver.add_points 里转成了 uint8。这里为了稳健，先转为 uint8 判断。
-        
-        colors_uint8 = colors
-        if colors.max() <= 1.01:
-             colors_uint8 = (colors * 255).astype(np.uint8)
-        else:
-             colors_uint8 = colors.astype(np.uint8)
-
-        # 定义红色掩码: R > 200, G < 50, B < 50 (给予少量容差，或者严格匹配 [255, 0, 0])
-        is_dynamic = (colors_uint8[:, 0] >= 250) & (colors_uint8[:, 1] == 0) & (colors_uint8[:, 2] == 0)
-        
-        # 1. 添加静态点 (Static)
-        pts_static = points[~is_dynamic]
-        col_static = colors[~is_dynamic]
-        
-        if len(pts_static) > 0:
-            self.server.scene.add_point_cloud(
-                name=f"pcd_{name}_static",
-                points=pts_static,
-                colors=col_static,
-                point_size=point_size,
-                point_shape="circle",
-            )
-
-        # 2. 添加动态点 (Dynamic)
-        pts_dynamic = points[is_dynamic]
-        col_dynamic = colors[is_dynamic]
-
-        if len(pts_dynamic) > 0:
-            handle = self.server.scene.add_point_cloud(
-                name=f"pcd_{name}_dynamic",
-                points=pts_dynamic,
-                colors=col_dynamic,
-                point_size=point_size,
-                point_shape="circle",
-            )
-            # 存入列表管理
-            self.dynamic_pcd_handles.append(handle)
-            # 设置初始可见性
-            handle.visible = self.gui_show_dynamic.value
 
     def _on_update_show_frames(self, _) -> None:
+        """Toggle visibility of all camera frames and frustums across all submaps."""
         visible = self.gui_show_frames.value
         for frames in self.submap_frames.values():
             for f in frames:
@@ -173,29 +133,16 @@ class Viewer:
             for fr in frustums:
                 fr.visible = visible
 
-    # --- [新增] 4. 更新回调：点击按钮时，批量修改动态点云可见性 ---
-    def _on_update_show_dynamic(self, _) -> None:
-        visible = self.gui_show_dynamic.value
-        # 遍历所有已添加的动态点云 Handle，设置可见性
-        # 清理失效的 handle (如果 submap 被删除了) - Viser 通常会自动处理，但简单的 try-except 可以防崩
-        valid_handles = []
-        for handle in self.dynamic_pcd_handles:
-            try:
-                handle.visible = visible
-                valid_handles.append(handle)
-            except:
-                pass # Handle 可能已经失效
-        self.dynamic_pcd_handles = valid_handles
 
 
 class Solver:
     def __init__(self,
-        init_conf_threshold: float,
+        init_conf_threshold: float,  # represents percentage (e.g., 50 means filter lowest 50%)
         use_point_map: bool = False,
         visualize_global_map: bool = False,
         use_sim3: bool = False,
         gradio_mode: bool = False,
-        vis_stride: int = 1,
+        vis_stride: int = 1,         # represents how much the visualized point clouds are sparsified
         vis_point_size: float = 0.001):
         
         self.init_conf_threshold = init_conf_threshold
@@ -218,10 +165,14 @@ class Solver:
 
         self.image_retrieval = ImageRetrieval()
         self.current_working_submap = None
+
         self.first_edge = True
+
         self.T_w_kf_minus = None
+
         self.prior_pcd = None
         self.prior_conf = None
+
         self.vis_stride = vis_stride
         self.vis_point_size = vis_point_size
 
@@ -231,21 +182,25 @@ class Solver:
         if self.gradio_mode:
             self.viewer.add_point_cloud(points_in_world_frame, points_colors)
         else:
-            # --- [修改] 调用 Viewer 的智能分离方法，而不是直接调用 server ---
-            self.viewer.add_split_point_cloud(
-                name=name,
+            self.viewer.server.scene.add_point_cloud(
+                name="pcd_"+name,
                 points=points_in_world_frame,
                 colors=points_colors,
-                point_size=point_size
+                point_size=point_size,
+                point_shape="circle",
             )
 
     def set_submap_point_cloud(self, submap):
+        # Add the point cloud to the visualization.
+        # NOTE(hlim): `stride` is used only to reduce the visualization cost in viser,
+        # and does not affect the underlying point cloud data.
         points_in_world_frame = submap.get_points_in_world_frame(stride = self.vis_stride)
         points_colors = submap.get_points_colors(stride = self.vis_stride)
         name = str(submap.get_id())
         self.set_point_cloud(points_in_world_frame, points_colors, name, self.vis_point_size)
 
     def set_submap_poses(self, submap):
+        # Add the camera poses to the visualization.
         extrinsics = submap.get_all_poses_world()
         if self.gradio_mode:
             for i in range(extrinsics.shape[0]):
@@ -273,7 +228,6 @@ class Solver:
             pred_dict (dict):
             {
                 "images": (S, 3, H, W)   - Input images,
-                "mask": (S, H, W)        - Segmentation mask (0/1),
                 "world_points": (S, H, W, 3),
                 "world_points_conf": (S, H, W),
                 "depth": (S, H, W, 1),
@@ -282,28 +236,32 @@ class Solver:
                 "intrinsic": (S, 3, 3),
             }
         """
+        # Unpack prediction dict
         images = pred_dict["images"]  # (S, 3, H, W)
-        mask = pred_dict["mask"]      # (S, H, W)
+
         extrinsics_cam = pred_dict["extrinsic"]  # (S, 3, 4)
         intrinsics_cam = pred_dict["intrinsic"]  # (S, 3, 3)
+        # print(intrinsics_cam)
+
         detected_loops = pred_dict["detected_loops"]
 
         if self.use_point_map:
-            world_points_map = pred_dict["world_points"]
-            conf = pred_dict["world_points_conf"]
+            world_points_map = pred_dict["world_points"]  # (S, H, W, 3)
+            conf = pred_dict["world_points_conf"]  # (S, H, W)
             world_points = world_points_map
         else:
-            depth_map = pred_dict["depth"]
-            conf = pred_dict["depth_conf"]
+            depth_map = pred_dict["depth"]  # (S, H, W, 1)
+            conf = pred_dict["depth_conf"]  # (S, H, W)
             world_points = unproject_depth_map_to_point_map(depth_map, extrinsics_cam, intrinsics_cam)
 
-        colors = (images.transpose(0, 2, 3, 1) * 255).astype(np.uint8)
+        # Convert images from (S, 3, H, W) to (S, H, W, 3)
+        # Then flatten everything for the point cloud
+        colors = (images.transpose(0, 2, 3, 1) * 255).astype(np.uint8)  # now (S, H, W, 3)
 
-        # Apply mask to turn dynamic objects red
-        is_dynamic = mask > 0.5
-        colors[is_dynamic] = [255, 0, 0]
+        # Flatten
+        cam_to_world = closed_form_inverse_se3(extrinsics_cam)  # shape (S, 4, 4)
 
-        cam_to_world = closed_form_inverse_se3(extrinsics_cam)
+        # estimate focal length from points
         points_in_first_cam = world_points[0,...]
         h, w = points_in_first_cam.shape[0:2]
 
@@ -313,16 +271,21 @@ class Solver:
             self.prior_pcd = world_points[-1,...].reshape(-1, 3)
             self.prior_conf = conf[-1,...].reshape(-1)
 
+            # Add node to graph.
             H_w_submap = np.eye(4)
             self.graph.add_homography(new_pcd_num, H_w_submap)
             self.graph.add_prior_factor(new_pcd_num, H_w_submap, self.graph.anchor_noise)
         else:
             prior_pcd_num = self.map.get_largest_key()
             prior_submap = self.map.get_submap(prior_pcd_num)
+
             current_pts = world_points[0,...].reshape(-1, 3)
+        
             good_mask = self.prior_conf > prior_submap.get_conf_threshold() * (conf[0,...,:].reshape(-1) > prior_submap.get_conf_threshold())
             
             if self.use_sim3:
+                # Note we still use H and not T in variable names so we can share code with the Sim3 case, 
+                # and SIM3 and SE3 are also subsets of the SL4 group
                 R_temp = prior_submap.poses[prior_submap.get_last_non_loop_frame_index()][0:3,0:3]
                 t_temp = prior_submap.poses[prior_submap.get_last_non_loop_frame_index()][0:3,3]
                 T_temp = np.eye(4)
@@ -335,28 +298,37 @@ class Solver:
                 H_relative[0:3,0:3] = R_temp
                 H_relative[0:3,3] = t_temp
 
+                # apply scale factor to points and poses
                 world_points *= scale_factor
                 cam_to_world[:, 0:3, 3] *= scale_factor
             else:
                 H_relative = ransac_projective(current_pts[good_mask], self.prior_pcd[good_mask])
             
             H_w_submap = prior_submap.get_reference_homography() @ H_relative
+
             non_lc_frame = self.current_working_submap.get_last_non_loop_frame_index()
             pts_cam0_camn = world_points[non_lc_frame,...].reshape(-1, 3)
             self.prior_pcd = pts_cam0_camn
             self.prior_conf = conf[non_lc_frame,...].reshape(-1)
 
+            # Add node to graph.
             self.graph.add_homography(new_pcd_num, H_w_submap)
+
+            # Add between factor.
             self.graph.add_between_factor(prior_pcd_num, new_pcd_num, H_relative, self.graph.relative_noise)
+
             print("added between factor", prior_pcd_num, new_pcd_num, H_relative)
 
+        # Create and add submap.
         self.current_working_submap.set_reference_homography(H_w_submap)
         self.current_working_submap.add_all_poses(cam_to_world)
         self.current_working_submap.add_all_points(world_points, colors, conf, self.init_conf_threshold, intrinsics_cam)
-        self.current_working_submap.set_conf_masks(conf)
+        self.current_working_submap.set_conf_masks(conf) # TODO should make this work for point cloud conf as well
 
+        # Add in loop closures if any were detected.
         for index, loop in enumerate(detected_loops):
             assert loop.query_submap_id == self.current_working_submap.get_id()
+
             loop_index = self.current_working_submap.get_last_non_loop_frame_index() + index + 1
 
             if self.use_sim3:
@@ -370,17 +342,22 @@ class Solver:
                 points_world_query = self.current_working_submap.get_frame_pointcloud(loop_index).reshape(-1, 3)
                 H_relative_lc = ransac_projective(points_world_query, points_world_detected)
 
+
             self.graph.add_between_factor(loop.detected_submap_id, loop.query_submap_id, H_relative_lc, self.graph.relative_noise)
-            self.graph.increment_loop_closure()
+            self.graph.increment_loop_closure() # Just for debugging and analysis, keep track of total number of loop closures
 
             print("added loop closure factor", loop.detected_submap_id, loop.query_submap_id, H_relative_lc)
             print("homography between nodes estimated to be", np.linalg.inv(self.map.get_submap(loop.detected_submap_id).get_reference_homography()) @ H_w_submap)
 
         self.map.add_submap(self.current_working_submap)
 
+
     def sample_pixel_coordinates(self, H, W, n):
+        # Sample n random row indices (y-coordinates)
         y_coords = torch.randint(0, H, (n,), dtype=torch.float32)
+        # Sample n random column indices (x-coordinates)
         x_coords = torch.randint(0, W, (n,), dtype=torch.float32)
+        # Stack to create an (n,2) tensor
         pixel_coords = torch.stack((y_coords, x_coords), dim=1)
         return pixel_coords
 
@@ -389,10 +366,13 @@ class Solver:
         images = load_and_preprocess_images(image_names).to(device)
         print(f"Preprocessed images shape: {images.shape}")
 
+        # print("Running inference...")
         dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
 
+        # Check for loop closures
         new_pcd_num = self.map.get_largest_key() + 1
         new_submap = Submap(new_pcd_num)
+        # new_submap.add_all_frames(images)
         new_submap.add_all_frames(images)
         new_submap.set_frame_ids(image_names)
         new_submap.set_all_retrieval_vectors(self.image_retrieval.get_all_submap_embeddings(new_submap))
@@ -405,13 +385,16 @@ class Solver:
         num_loop_frames = len(retrieved_frames)
         new_submap.set_last_non_loop_frame_index(images.shape[0] - 1)
         if num_loop_frames > 0:
-            image_tensor = torch.stack(retrieved_frames)
-            images = torch.cat([images, image_tensor], dim=0)
+            image_tensor = torch.stack(retrieved_frames)  # Shape (n, 3, w, h)
+            images = torch.cat([images, image_tensor], dim=0) # Shape (s+n, 3, w, h)
+
             new_submap.add_all_frames(images)
 
         self.current_working_submap = new_submap
 
-        S, C, H, W = images.shape
+        #########################################################
+        # Tensor(CUDA) -> List of Numpy(CPU)
+        S, C, H, W = images.shape #  [7, 3, 406, 518]
         imgs_np = (images.permute(0, 2, 3, 1).cpu().numpy() * 255).astype(np.uint8)
         input_images_list = [img for img in imgs_np]
 
@@ -421,14 +404,16 @@ class Solver:
         
         device = images.device
         
+        # da3_out.depth [S, H_out, W_out]
         depth_raw = torch.from_numpy(da3_out.depth).to(device)
         conf_raw = torch.from_numpy(da3_out.conf).to(device)
         
-        if hasattr(da3_out, 'motion_seg_mask') and da3_out.motion_seg_mask is not None:
-             mask_raw = da3_out.motion_seg_mask.to(device).float()
-        else:
-             print("Warning: No motion_seg_mask found, using zeros.")
-             mask_raw = torch.zeros_like(depth_raw)
+        # [S, H_out, W_out] 
+        if depth_raw.dim() == 2: 
+             pass 
+        
+        total_elements = depth_raw.numel()
+        pixels_per_img = total_elements // S
 
         if depth_raw.shape[0] == S and depth_raw.dim() == 3:
             _, H_out, W_out = depth_raw.shape
@@ -437,6 +422,7 @@ class Solver:
 
         print(f"Input: {H}x{W}, Output: {H_out}x{W_out}")
 
+        # [S, H, W] to [S, 1, H, W] interpolate
         depth = torch.nn.functional.interpolate(
             depth_raw.unsqueeze(1), size=(H, W), mode='bilinear', align_corners=False
         ).squeeze(1)
@@ -445,38 +431,35 @@ class Solver:
             conf_raw.unsqueeze(1), size=(H, W), mode='bilinear', align_corners=False
         ).squeeze(1)
 
-        if mask_raw.dim() == 3:
-             mask_in = mask_raw.unsqueeze(1)
-        else:
-             mask_in = mask_raw
-
-        mask = torch.nn.functional.interpolate(
-            mask_in, size=(H, W), mode='nearest'
-        ).squeeze(1)
-
+        # extrinsics: [S, 3, 4], intrinsics: [S, 3, 3]
         extrinsics = torch.from_numpy(da3_out.extrinsics).to(device).view(S, 3, 4)
         intrinsics_raw = torch.from_numpy(da3_out.intrinsics).to(device).view(S, 3, 3)
 
+        # intrinsics scaling
         scale_x = W / W_out
         scale_y = H / H_out
         
         intrinsics = intrinsics_raw.clone()
-        intrinsics[:, 0, 0] *= scale_x
-        intrinsics[:, 0, 2] *= scale_x
-        intrinsics[:, 1, 1] *= scale_y
-        intrinsics[:, 1, 2] *= scale_y
+        intrinsics[:, 0, 0] *= scale_x # fx
+        intrinsics[:, 0, 2] *= scale_x # cx
+        intrinsics[:, 1, 1] *= scale_y # fy
+        intrinsics[:, 1, 2] *= scale_y # cy
 
+        # depth to world points
         y_grid, x_grid = torch.meshgrid(torch.arange(H, device=device), torch.arange(W, device=device), indexing='ij')
         pixels = torch.stack([x_grid, y_grid, torch.ones_like(x_grid)], dim=-1).float()
-        pixels = pixels.unsqueeze(0).expand(S, -1, -1, -1)
+        pixels = pixels.unsqueeze(0).expand(S, -1, -1, -1) # [S, H, W, 3]
         pixels_flat = pixels.reshape(S, H*W, 3)
 
-        K_inv = torch.inverse(intrinsics)
+        # 4.2 Pixel -> Camera
+        K_inv = torch.inverse(intrinsics) # [S, 3, 3]
+        # [S, 3, 3] @ [S, 3, HW]
         cam_points = torch.bmm(K_inv, pixels_flat.transpose(1, 2)).transpose(1, 2)
         cam_points = cam_points * depth.reshape(S, H*W, 1) 
 
+        # 4.3 Camera -> World
         bottom_row = torch.tensor([0,0,0,1], device=device, dtype=torch.float32).view(1,1,4).expand(S, -1, -1)
-        E_4x4 = torch.cat([extrinsics, bottom_row], dim=1)
+        E_4x4 = torch.cat([extrinsics, bottom_row], dim=1) # [S, 4, 4]
         E_inv = torch.inverse(E_4x4)
         
         cam_points_homo = torch.cat([cam_points, torch.ones((S, H*W, 1), device=device)], dim=-1)
@@ -485,9 +468,8 @@ class Solver:
 
         predictions = {
             "pose_enc": None,         
-            "depth": depth.unsqueeze(-1),
+            "depth": depth.unsqueeze(-1), # [S, H, W, 1]
             "depth_conf": conf,
-            "mask": mask,
             "world_points": world_points,
             "world_points_conf": conf,
             "images": images,

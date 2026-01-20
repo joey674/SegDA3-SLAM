@@ -10,6 +10,7 @@ import src.da3_slam.slam_utils as utils
 from src.da3_slam.solver import Solver
 
 from depth_anything_3.api import DepthAnything3
+from src.seg_da3.SegDA3_model import SegDA3
 
 
 parser = argparse.ArgumentParser(description="DA3-SLAM demo")
@@ -46,8 +47,11 @@ def main():
         vis_point_size = args.vis_point_size,
     )
 
-    print("Initializing and loading DepthAnythingV3 model...")
-    model = DepthAnything3.from_pretrained("/home/zhouyi/repo/model_DepthAnythingV3/checkpoints/DA3-LARGE-1.1")
+    # print("Initializing and loading DepthAnythingV3 model...")
+    # model = DepthAnything3.from_pretrained("/home/zhouyi/repo/model_DepthAnythingV3/checkpoints/DA3-LARGE-1.1")
+    print("Initializing and loading SegDA3 model...")
+    model = SegDA3(seg_head_ckpt_path="/home/zhouyi/repo/model_DepthAnythingV3/checkpoints/SegDA3/model.pth").to(device)
+
 
     model.eval()
     model = model.to(device)

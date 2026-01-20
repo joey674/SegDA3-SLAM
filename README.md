@@ -1,8 +1,8 @@
 # deploy
-sudo apt-get install git python3-pip libboost-all-dev cmake gcc g++ unzip
+sudo apt-get install git python3-pip libboost-all-dev cmake gcc g++ 
 
-conda create -n da3-slam python=3.11
-conda activate da3-slam
+conda create -n (vggt-slam)da3-slam python=3.11
+conda activate (vggt-slam)da3-slam
 
 ## SLAM
 pip3 install -r requirements.txt
@@ -17,6 +17,8 @@ pip install -e .
 cd /home/zhouyi/repo/VGGT-SLAM
 
 
-
 # run
-python3 main.py --image_folder office_loop --max_loops 1
+python3 main.py --image_folder office_loop
+python3 main.py --image_folder /home/zhouyi/repo/dataset/2077/scene1 
+
+python src/seg_da3/SegDA3_eval.py 
