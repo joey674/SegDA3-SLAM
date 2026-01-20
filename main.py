@@ -1,12 +1,9 @@
 import os
 import glob
 import argparse
-
-import numpy as np
 import torch
 from tqdm.auto import tqdm
 import cv2
-import matplotlib.pyplot as plt
 import time
 
 import src.da3_slam.slam_utils as utils
@@ -15,15 +12,14 @@ from src.da3_slam.solver import Solver
 from depth_anything_3.api import DepthAnything3
 
 
-parser = argparse.ArgumentParser(description="VGGT-SLAM demo")
-parser.add_argument("--image_folder", type=str, default="examples/kitchen/images/", help="Path to folder containing images")
-parser.add_argument("--vis_map", action="store_true", help="Visualize point cloud in viser as it is being build, otherwise only show the final map")
-parser.add_argument("--vis_flow", action="store_true", help="Visualize optical flow from RAFT for keyframe selection")
-parser.add_argument("--use_sim3", action="store_true", help="Use Sim3 instead of SL(4)")
+parser = argparse.ArgumentParser(description="DA3-SLAM demo")
+parser.add_argument("--image_folder", type=str, default="/home/zhouyi/repo/dataset/2077/scene1", help="")
 parser.add_argument("--submap_size", type=int, default=4, help="Number of new frames per submap, does not include overlapping frames or loop closure frames")
 parser.add_argument("--overlapping_window_size", type=int, default=1, help="ONLY DEFAULT OF 1 SUPPORTED RIGHT NOW. Number of overlapping frames, which are used in SL(4) estimation")
 parser.add_argument("--use_optical_flow_downsample", action="store_false", help="")
+parser.add_argument("--use_sim3", action="store_true", help="Use Sim3 instead of SL(4)")
 
+parser.add_argument("--vis_flow", action="store_true", help="Visualize optical flow from RAFT for keyframe selection")
 parser.add_argument("--downsample_factor", type=int, default=1, help="Factor to reduce image size by 1/N")
 parser.add_argument("--max_loops", type=int, default=1, help="Maximum number of loop closures per submap")
 parser.add_argument("--min_disparity", type=float, default=50, help="Minimum disparity to generate a new keyframe")
@@ -35,7 +31,7 @@ parser.add_argument("--vis_point_size", type=float, default=0.003, help="Visuali
 
 def main():
     """
-    Main function that wraps the entire pipeline of VGGT-SLAM.
+    Main function
     """
     args = parser.parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -49,12 +45,6 @@ def main():
         vis_stride = args.vis_stride,
         vis_point_size = args.vis_point_size,
     )
-
-    # print("Initializing and loading VGGT model...")
-    # # model = VGGT.from_pretrained("facebook/VGGT-1B")
-    # model = VGGT()
-    # _URL = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
-    # model.load_state_dict(torch.hub.load_state_dict_from_url(_URL))
 
     print("Initializing and loading DepthAnythingV3 model...")
     model = DepthAnything3.from_pretrained("/home/zhouyi/repo/model_DepthAnythingV3/checkpoints/DA3-LARGE-1.1")
@@ -75,6 +65,7 @@ def main():
     image_names_subset = []
     data = []
     for image_name in tqdm(image_names):
+        # select keyframes 
         if args.use_optical_flow_downsample:
             img = cv2.imread(image_name)
             enough_disparity = solver.flow_tracker.compute_disparity(img, args.min_disparity, args.vis_flow)
@@ -83,7 +74,7 @@ def main():
         else:
             image_names_subset.append(image_name)
 
-        # Run submap processing if enough images are collected or if it's the last group of images.
+        # Run submap processing if enough images are collected or if it's the last group of images
         if len(image_names_subset) == args.submap_size + args.overlapping_window_size or image_name == image_names[-1]:
             print(image_names_subset)
             predictions = solver.run_predictions(image_names_subset, model, args.max_loops)

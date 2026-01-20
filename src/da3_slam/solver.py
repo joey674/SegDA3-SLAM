@@ -23,7 +23,7 @@ def color_point_cloud_by_confidence(pcd, confidence, cmap='viridis'):
     """
     Color a point cloud based on per-point confidence values.
     
-    Parameters:
+    Args:
         pcd (o3d.geometry.PointCloud): The point cloud.
         confidence (np.ndarray): Confidence values, shape (N,).
         cmap (str): Matplotlib colormap name.
@@ -411,7 +411,6 @@ class Solver:
         new_submap.set_frame_ids(image_names)
         new_submap.set_all_retrieval_vectors(self.image_retrieval.get_all_submap_embeddings(new_submap))
 
-        # TODO implement this
         detected_loops = self.image_retrieval.find_loop_closures(self.map, new_submap, max_loop_closures=max_loops)
         if len(detected_loops) > 0:
             print(colored("detected_loops", "yellow"), detected_loops)
@@ -423,58 +422,41 @@ class Solver:
             image_tensor = torch.stack(retrieved_frames)  # Shape (n, 3, w, h)
             images = torch.cat([images, image_tensor], dim=0) # Shape (s+n, 3, w, h)
 
-            # TODO we don't really need to store the loop closure frame again, but this makes lookup easier for the visualizer.
-            # We added the frame to the submap once before to get the retrieval vectors,
             new_submap.add_all_frames(images)
 
         self.current_working_submap = new_submap
 
         #########################################################
-
-        # 1. [数据转换] Tensor(CUDA) -> List of Numpy(CPU)
-        S, C, H, W = images.shape # 原始尺寸: [7, 3, 406, 518]
+        # Tensor(CUDA) -> List of Numpy(CPU)
+        S, C, H, W = images.shape #  [7, 3, 406, 518]
         imgs_np = (images.permute(0, 2, 3, 1).cpu().numpy() * 255).astype(np.uint8)
         input_images_list = [img for img in imgs_np]
 
-        # 2. [模型推理]
         print(f"Running DA3 inference on {S} frames...")
         with torch.no_grad():
             da3_out = model.inference(input_images_list)
         
-        # 3. [处理输出尺寸不匹配问题]
         device = images.device
         
-        # 3.1 获取 DA3 实际输出的尺寸
-        # da3_out.depth 通常是 numpy array, 形状可能是 [S, H_out, W_out]
+        # da3_out.depth [S, H_out, W_out]
         depth_raw = torch.from_numpy(da3_out.depth).to(device)
         conf_raw = torch.from_numpy(da3_out.conf).to(device)
         
-        # 确保是 [S, H_out, W_out] 格式
-        if depth_raw.dim() == 2: # 假如它被压扁了
-             # 尝试推断形状，或者假设它已经是堆叠好的。
-             # 基于报错信息，这里它应该是一个总数不对的 array，通常 inference 返回的是 [S, H, W]
+        # [S, H_out, W_out] 
+        if depth_raw.dim() == 2: 
              pass 
         
-        # 获取实际输出的高宽
-        # 注意: 如果 da3_out.depth 是扁平的，这里需要更复杂的处理。
-        # 但通常它保持结构。我们先看总数是否能被 S 整除。
         total_elements = depth_raw.numel()
         pixels_per_img = total_elements // S
-        # 尝试推测 H_out, W_out。
-        # 既然我们算出是 392x504，我们就动态获取 shape
-        # 如果 depth_raw 已经是 [S, H_out, W_out] 直接取 shape
+
         if depth_raw.shape[0] == S and depth_raw.dim() == 3:
             _, H_out, W_out = depth_raw.shape
         else:
-            # 假如是扁平的或者其他情况，这里做一个防御性 reshape
-            # 这是一个基于你报错数值的猜想 392x504
-            # 更好的做法是依赖 da3_out.depth 的原始 shape
             H_out, W_out = depth_raw.shape[-2], depth_raw.shape[-1]
 
-        print(f"DEBUG: Input: {H}x{W}, Output: {H_out}x{W_out}")
+        print(f"Input: {H}x{W}, Output: {H_out}x{W_out}")
 
-        # 3.2 缩放回原始尺寸 [S, H, W]
-        # 需要增加维度到 [S, 1, H, W] 才能用 interpolate
+        # [S, H, W] to [S, 1, H, W] interpolate
         depth = torch.nn.functional.interpolate(
             depth_raw.unsqueeze(1), size=(H, W), mode='bilinear', align_corners=False
         ).squeeze(1)
@@ -483,12 +465,11 @@ class Solver:
             conf_raw.unsqueeze(1), size=(H, W), mode='bilinear', align_corners=False
         ).squeeze(1)
 
-        # 3.3 处理外参和内参
+        # extrinsics: [S, 3, 4], intrinsics: [S, 3, 3]
         extrinsics = torch.from_numpy(da3_out.extrinsics).to(device).view(S, 3, 4)
         intrinsics_raw = torch.from_numpy(da3_out.intrinsics).to(device).view(S, 3, 3)
 
-        # [重要] 修正内参
-        # 图像被拉伸回 HxW，内参矩阵中的焦距(fx, fy)和光心(cx, cy)也要相应缩放
+        # intrinsics scaling
         scale_x = W / W_out
         scale_y = H / H_out
         
@@ -498,8 +479,7 @@ class Solver:
         intrinsics[:, 1, 1] *= scale_y # fy
         intrinsics[:, 1, 2] *= scale_y # cy
 
-        # 4. [生成点云] 使用修正后的 depth 和 intrinsics
-        # 4.1 生成像素坐标网格
+        # depth to world points
         y_grid, x_grid = torch.meshgrid(torch.arange(H, device=device), torch.arange(W, device=device), indexing='ij')
         pixels = torch.stack([x_grid, y_grid, torch.ones_like(x_grid)], dim=-1).float()
         pixels = pixels.unsqueeze(0).expand(S, -1, -1, -1) # [S, H, W, 3]
@@ -509,7 +489,7 @@ class Solver:
         K_inv = torch.inverse(intrinsics) # [S, 3, 3]
         # [S, 3, 3] @ [S, 3, HW]
         cam_points = torch.bmm(K_inv, pixels_flat.transpose(1, 2)).transpose(1, 2)
-        cam_points = cam_points * depth.reshape(S, H*W, 1) # 应用深度
+        cam_points = cam_points * depth.reshape(S, H*W, 1) 
 
         # 4.3 Camera -> World
         bottom_row = torch.tensor([0,0,0,1], device=device, dtype=torch.float32).view(1,1,4).expand(S, -1, -1)
@@ -520,7 +500,6 @@ class Solver:
         world_points_flat = torch.bmm(E_inv, cam_points_homo.transpose(1, 2)).transpose(1, 2)
         world_points = world_points_flat[..., :3].view(S, H, W, 3)
 
-        # 5. [组装字典]
         predictions = {
             "pose_enc": None,         
             "depth": depth.unsqueeze(-1), # [S, H, W, 1]
@@ -533,18 +512,10 @@ class Solver:
             "detected_loops": detected_loops
         }
 
-        # 移除 Batch 维度 (适配下游逻辑)
         for key in predictions.keys():
              if isinstance(predictions[key], torch.Tensor):
                  predictions[key] = predictions[key].cpu().numpy()
-                 if predictions[key].shape[0] == 1 and S == 1: # 仅当 Batch=1 时 squeeze，你这里 S=7 不应该 squeeze 第一维
+                 if predictions[key].shape[0] == 1 and S == 1: 
                      predictions[key] = predictions[key].squeeze(0)
-                 # 但 VGGT 原代码里如果是 Sequence，通常保留 S 维度，或者 squeeze(0) 是为了去掉 Batch 维度 (B, S, ...)
-                 # 注意：你的 images 输入是 [S, C, H, W]，没有 Batch 维度 B。
-                 # 如果原代码 predictions[key] = ...squeeze(0)，说明它原本期望输入是 [B, S, ...]
-                 # 你的 main.py 调用是 solver.run_predictions(..., model, ...)
-                 # 在 run_predictions 里，load_and_preprocess_images 返回的是 [S, 3, H, W] (没有 B)
-                 # 所以这里不需要 squeeze(0)，除非下游期望去掉 S (不可能，因为是 SLAM 序列)
-                 # 结论：不要执行 squeeze(0)，直接转 numpy 即可。
-        
+
         return predictions
