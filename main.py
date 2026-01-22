@@ -15,9 +15,9 @@ from src.seg_da3.SegDA3_model import SegDA3
 
 parser = argparse.ArgumentParser(description="DA3-SLAM demo")
 parser.add_argument("--image_folder", type=str, default="/home/zhouyi/repo/dataset/2077/scene1", help="")
-parser.add_argument("--submap_size", type=int, default=4, help="Number of new frames per submap, does not include overlapping frames or loop closure frames")
+parser.add_argument("--submap_size", type=int, default=10, help="Number of new frames per submap, does not include overlapping frames or loop closure frames")
 parser.add_argument("--overlapping_window_size", type=int, default=1, help="ONLY DEFAULT OF 1 SUPPORTED RIGHT NOW. Number of overlapping frames, which are used in SL(4) estimation")
-parser.add_argument("--use_optical_flow_downsample", action="store_false", help="")
+parser.add_argument("--use_optical_flow_downsample", default=False, help="")
 parser.add_argument("--use_sim3", action="store_true", help="Use Sim3 instead of SL(4)")
 
 parser.add_argument("--vis_flow", action="store_true", help="Visualize optical flow from RAFT for keyframe selection")
@@ -48,9 +48,9 @@ def main():
     )
 
     # print("Initializing and loading DepthAnythingV3 model...")
-    # model = DepthAnything3.from_pretrained("/home/zhouyi/repo/model_DepthAnythingV3/checkpoints/DA3-LARGE-1.1")
+    # model = DepthAnything3.from_pretrained("/home/zhouyi/repo/SegDA3/checkpoints/DA3-LARGE-1.1")
     print("Initializing and loading SegDA3 model...")
-    model = SegDA3(seg_head_ckpt_path="/home/zhouyi/repo/model_DepthAnythingV3/checkpoints/SegDA3/model.pth").to(device)
+    model = SegDA3(seg_head_ckpt_path="/home/zhouyi/repo/SegDA3/checkpoints/SegDA3/model.pth").to(device)
 
 
     model.eval()
@@ -69,7 +69,7 @@ def main():
     image_names_subset = []
     data = []
     for image_name in tqdm(image_names):
-        # select keyframes 
+        # select keyframes based on optical flow disparity
         if args.use_optical_flow_downsample:
             img = cv2.imread(image_name)
             enough_disparity = solver.flow_tracker.compute_disparity(img, args.min_disparity, args.vis_flow)

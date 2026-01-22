@@ -80,7 +80,7 @@ class SegDA3(nn.Module):
         seg_head_ckpt_path: str = None,
     ):
         super().__init__()
-        model_path = "/home/zhouyi/repo/model_DepthAnythingV3/checkpoints/DA3-LARGE-1.1"
+        model_path = "/home/zhouyi/repo/SegDA3/checkpoints/DA3-LARGE-1.1"
         print(f"Loading DA3 from local path: {model_path}...")
         self.da3 = DepthAnything3.from_pretrained(model_path)
 

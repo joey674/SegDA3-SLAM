@@ -8,9 +8,9 @@ import viser
 import viser.transforms as viser_tf
 from termcolor import colored
 
-from vggt.utils.geometry import closed_form_inverse_se3, unproject_depth_map_to_point_map
-from vggt.utils.load_fn import load_and_preprocess_images
-from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+from src.vggt.utils.geometry import closed_form_inverse_se3, unproject_depth_map_to_point_map
+from src.vggt.utils.load_fn import load_and_preprocess_images
+from src.vggt.utils.pose_enc import pose_encoding_to_extri_intri
 
 from src.da3_slam.loop_closure import ImageRetrieval
 from src.da3_slam.frame_overlap import FrameTracker
