@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='segda3_slam',
+    name='dynada3_slam',
     version='0.1.0',
     description='A feedforward SLAM system optimized on the SL(4) manifold.',
     packages=find_packages(include=['src', 'src.*']),

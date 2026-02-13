@@ -9,12 +9,12 @@ import time
 import src.da3_slam.slam_utils as utils
 from src.da3_slam.solver import Solver
 
-from depth_anything_3.api import DepthAnything3
-from src.seg_da3.SegDA3_model import SegDA3
+# from depth_anything_3.api import DepthAnything3
+from src.dyna_da3.DynaDA3_model import DynaDA3
 
 
 parser = argparse.ArgumentParser(description="DA3-SLAM demo")
-parser.add_argument("--image_folder", type=str, default="/home/zhouyi/repo/dataset/2077/scene1", help="")
+parser.add_argument("--image_folder", type=str, default="../dataset/2077/2077_scene1", help="")
 parser.add_argument("--submap_size", type=int, default=10, help="Number of new frames per submap, does not include overlapping frames or loop closure frames")
 parser.add_argument("--overlapping_window_size", type=int, default=1, help="ONLY DEFAULT OF 1 SUPPORTED RIGHT NOW. Number of overlapping frames, which are used in SL(4) estimation")
 parser.add_argument("--use_optical_flow_downsample", default=False, help="")
@@ -48,9 +48,9 @@ def main():
     )
 
     # print("Initializing and loading DepthAnythingV3 model...")
-    # model = DepthAnything3.from_pretrained("/home/zhouyi/repo/SegDA3/checkpoints/DA3-LARGE-1.1")
-    print("Initializing and loading SegDA3 model...")
-    model = SegDA3(seg_head_ckpt_path="/home/zhouyi/repo/SegDA3/checkpoints/SegDA3/model.pth").to(device)
+    # model = DepthAnything3.from_pretrained("../checkpoint/DA3-GIANT-1.1")
+    print("Initializing and loading DynaDA3 model...")
+    model = DynaDA3(uncertainty_head_ckpt_path="../checkpoint/DynaDA3-LARGE-1.1/uncertainty_head.pth").to(device)
 
 
     model.eval()
